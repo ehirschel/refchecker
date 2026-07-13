@@ -648,6 +648,10 @@ class ArxivReferenceChecker:
                 provider_config['api_key'] = self.llm_config_override['api_key']
             if self.llm_config_override.get('endpoint'):
                 provider_config['endpoint'] = self.llm_config_override['endpoint']
+            if self.llm_config_override.get('disable_thinking'):
+                provider_config['disable_thinking'] = True
+            if self.llm_config_override.get('timeout') is not None:
+                provider_config['timeout'] = self.llm_config_override['timeout']
                 
             # Update global LLM config with parallel processing overrides
             if 'parallel_chunks' in self.llm_config_override:
@@ -7777,6 +7781,10 @@ def main():
                         help="LLM model to use (overrides default for the provider)")
     parser.add_argument("--llm-endpoint", type=str,
                         help="Endpoint for the LLM provider (overrides default endpoint)")
+    parser.add_argument("--llm-no-thinking", action="store_true",
+                        help="Disable reasoning/thinking on OpenAI-compatible endpoints (send extra_body chat_template_kwargs.enable_thinking=false)")
+    parser.add_argument("--llm-timeout", type=float, metavar="SECONDS",
+                        help="Read timeout in seconds for LLM API calls (default: 60). Needed for slow self-hosted models.")
     parser.add_argument("--llm-parallel-chunks", action="store_true", default=None,
                         help="Enable parallel processing of LLM chunks (default: enabled)")
     parser.add_argument("--llm-no-parallel-chunks", action="store_true",
@@ -7888,7 +7896,9 @@ def main():
             'provider': args.llm_provider,
             'model': args.llm_model,
             'api_key': api_key,
-            'endpoint': args.llm_endpoint
+            'endpoint': args.llm_endpoint,
+            'disable_thinking': args.llm_no_thinking,
+            'timeout': args.llm_timeout
         }
         
         # Handle parallel chunk processing arguments

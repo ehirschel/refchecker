@@ -499,6 +499,8 @@ class OpenAIProvider(LLMProviderMixin, LLMProvider):
         super().__init__(config)
         self.api_key = config.get("api_key") or resolve_api_key('openai')
         self.endpoint = config.get("endpoint")
+        self.disable_thinking = config.get("disable_thinking", False)
+        self.timeout = config.get("timeout") or 60.0
         self.client = None
         
         if self.api_key:
@@ -507,7 +509,7 @@ class OpenAIProvider(LLMProviderMixin, LLMProvider):
                 import httpx
                 client_kwargs = {
                     "api_key": self.api_key,
-                    "timeout": httpx.Timeout(60.0, connect=5.0),
+                    "timeout": httpx.Timeout(self.timeout, connect=5.0),
                 }
                 if self.endpoint:
                     base = self.endpoint
@@ -539,6 +541,9 @@ class OpenAIProvider(LLMProviderMixin, LLMProvider):
             )
             if not _is_openai_reasoning_model(_model):
                 kwargs['temperature'] = self.temperature
+            if self.disable_thinking:
+                # vLLM/SGLang convention for hybrid-thinking models / to make Aqueduct gateway not use reasoning mode
+                kwargs['extra_body'] = {"chat_template_kwargs": {"enable_thinking": False}}
             response = self.client.chat.completions.create(**kwargs)
             _record_provider_usage("openai", _model, response, "extraction")
             _track_openai_usage(response, _model)

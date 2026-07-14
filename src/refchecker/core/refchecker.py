@@ -276,6 +276,7 @@ class ArxivReferenceChecker:
     def __init__(self, semantic_scholar_api_key=None, db_path=None, output_file=None,
                  llm_config=None, debug_mode=False, enable_parallel=True, max_workers=6,
                  report_file=None, report_format='json', cache_dir=None,
+                 all_references_file=None,
                  db_paths=None, database_directory=None,
                  # Deprecated parameters kept for backward compatibility
                  scan_mode='standard', only_flagged=False):
@@ -296,6 +297,9 @@ class ArxivReferenceChecker:
         self.verification_output_file = output_file
         self.report_file = report_file
         self.report_format = report_format
+        # Custom: optional JSON to capture all (not only problematic) references (verified + problematic). Populated in _process_reference_result.
+        self.all_references_file = all_references_file
+        self.all_reference_records = []
         self.last_bibliography_extraction_method = None
 
         # Initialize optional LLM hallucination verifier
@@ -4510,6 +4514,11 @@ class ArxivReferenceChecker:
         
         # Write all accumulated errors to file at the end of the run
         self.write_all_errors_to_file()
+        # Write every reference (verified + problematic) if specified in CLI
+        if self.all_references_file:
+            with open(self.all_references_file, 'w', encoding='utf-8', errors='replace') as f:
+                json.dump(self.all_reference_records, f, indent=2, default=str)
+            print(f"\n💾 All references saved to: {self.all_references_file}")
         # Write structured report when a report file is requested.
         if structured_payload is None and self.report_file:
             structured_payload = self._build_structured_report_payload()
@@ -7111,6 +7120,34 @@ class ArxivReferenceChecker:
             precomputed_hallucination: Pre-computed hallucination assessment from parallel printer (skip LLM re-call)
             precomputed_hallucination_applied: Whether that assessment has already been applied to errors/status
         """
+        # If --all-references-file is set then record every reference (verified or not) for output
+        # Runs before the error handling below so cleanly-verified refs are captured too
+        all_refs_record = None
+        if self.all_references_file:
+            if not errors:
+                status = 'verified'
+            elif any(e.get('error_type') and e.get('error_type') != 'unverified' for e in errors):
+                status = 'error'
+            elif any(e.get(k) == 'unverified' for e in errors for k in ('error_type', 'warning_type', 'info_type')):
+                status = 'unverified'
+            elif any('warning_type' in e for e in errors):
+                status = 'warning'
+            elif any('info_type' in e for e in errors):
+                status = 'info'
+            else:
+                status = 'error'
+            # Keep every extracted field (title, authors, raw_text, doi, venue,
+            # journal, cited_url, ...) and layer the verification result on top.
+            all_refs_record = dict(reference)
+            all_refs_record.update({
+                'source_paper_id': paper.get_short_id() if hasattr(paper, 'get_short_id') else None,
+                'status': status,
+                'reference_url': reference_url,
+                'errors': errors or [],
+                'verified_data': verified_data,
+            })
+            self.all_reference_records.append(all_refs_record)
+
         # If errors found, add to dataset and optionally print details
         if errors:
             from refchecker.core.hallucination_policy import apply_hallucination_verdict
@@ -7152,6 +7189,12 @@ class ArxivReferenceChecker:
                     if url_assessment and applied_hallucination.get('status') == 'verified':
                         # LLM confirmed the reference is real — treat as verified
                         cited_url = reference.get('cited_url') or reference.get('url', '')
+                        if all_refs_record is not None:
+                            # Reflect the reclassification in the all-references
+                            # output (initial errors stay on the record)
+                            all_refs_record['status'] = 'verified'
+                            all_refs_record['reference_url'] = reference_url or cited_url
+                            all_refs_record['hallucination_assessment'] = url_assessment
                         if print_output:
                             print(f"       ✅ Verified via URL: {cited_url}")
                             explanation = url_assessment.get('explanation', '')
@@ -7244,6 +7287,13 @@ class ArxivReferenceChecker:
                     error_entry_index=error_entry_index,
                     reference_url=reference_url,
                 )
+
+            # Mirror the final hallucination assessment (attached to the error
+            # dataset entry above) onto the all-references record
+            if all_refs_record is not None and error_entry_record:
+                assessment = error_entry_record.get('hallucination_assessment')
+                if assessment is not None:
+                    all_refs_record['hallucination_assessment'] = assessment
     
     def _has_arxiv_id_error(self, errors):
         """Check if there's an ArXiv ID error in the error list"""
@@ -7785,6 +7835,9 @@ def main():
                         help="Disable reasoning/thinking on OpenAI-compatible endpoints (send extra_body chat_template_kwargs.enable_thinking=false)")
     parser.add_argument("--llm-timeout", type=float, metavar="SECONDS",
                         help="Read timeout in seconds for LLM API calls (default: 60). Needed for slow self-hosted models.")
+    parser.add_argument("--all-references-file", type=str, metavar="PATH",
+                        help="Write EVERY reference (verified and problematic) to PATH as JSON, "
+                             "one record per reference with its verification status.")
     parser.add_argument("--llm-parallel-chunks", action="store_true", default=None,
                         help="Enable parallel processing of LLM chunks (default: enabled)")
     parser.add_argument("--llm-no-parallel-chunks", action="store_true",
@@ -7939,6 +7992,7 @@ def main():
             report_file=args.report_file,
             report_format=report_format,
             cache_dir=args.cache,
+            all_references_file=args.all_references_file,
         )
         
         if checker.fatal_error:

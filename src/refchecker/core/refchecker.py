@@ -360,21 +360,25 @@ class ArxivReferenceChecker:
 
         # Initialize optional web search — prefer the hallucination provider
         # (which is a full API provider) over the main extraction provider.
+        # --no-web-search turn OPENAI websearch off. Custom Endpoints cannot use this
         web_searcher = None
         web_search_provider = (
             (llm_config or {}).get('hallucination_provider')
             or (llm_config or {}).get('provider')
         )
-        try:
-            from refchecker.checkers.web_search import create_web_search_checker
-            searcher = create_web_search_checker(preferred_provider=web_search_provider)
-            if searcher.available:
-                web_searcher = searcher
-                logger.debug(f'Web search verification enabled (provider: {searcher._provider_name})')
-            else:
-                logger.debug('Web search not available (no API key)')
-        except Exception as exc:
-            logger.debug(f'Web search init failed: {exc}')
+        if not (llm_config or {}).get('web_search', True):
+            logger.debug('Web search verification disabled')
+        else:
+            try:
+                from refchecker.checkers.web_search import create_web_search_checker
+                searcher = create_web_search_checker(preferred_provider=web_search_provider)
+                if searcher.available:
+                    web_searcher = searcher
+                    logger.debug(f'Web search verification enabled (provider: {searcher._provider_name})')
+                else:
+                    logger.debug('Web search not available (no API key)')
+            except Exception as exc:
+                logger.debug(f'Web search init failed: {exc}')
 
         self.report_builder = ReportBuilder(
             report_file=report_file,
@@ -7835,6 +7839,8 @@ def main():
                         help="Disable reasoning/thinking on OpenAI-compatible endpoints (send extra_body chat_template_kwargs.enable_thinking=false)")
     parser.add_argument("--llm-timeout", type=float, metavar="SECONDS",
                         help="Read timeout in seconds for LLM API calls (default: 60). Needed for slow self-hosted models.")
+    parser.add_argument("--no-web-search", action="store_true",
+                        help="Disable LLM web-search verification. Custom OpenAI-compatible endpoints cannot do web search.")
     parser.add_argument("--all-references-file", type=str, metavar="PATH",
                         help="Write EVERY reference (verified and problematic) to PATH as JSON, "
                              "one record per reference with its verification status.")
@@ -7951,7 +7957,8 @@ def main():
             'api_key': api_key,
             'endpoint': args.llm_endpoint,
             'disable_thinking': args.llm_no_thinking,
-            'timeout': args.llm_timeout
+            'timeout': args.llm_timeout,
+            'web_search': not args.no_web_search
         }
         
         # Handle parallel chunk processing arguments
